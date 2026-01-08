@@ -125,6 +125,53 @@ describe('Infinite queries', () => {
     return countersApi
   }
 
+  function createFiniteDataApi() {
+    const data = ['a', 'b', 'c', 'd', 'e']
+    let queryFnCallCount = 0
+
+    const finiteDataApi = createApi({
+      baseQuery: fakeBaseQuery(),
+      endpoints: (build) => ({
+        list: build.infiniteQuery<string, void, number>({
+          infiniteQueryOptions: {
+            initialPageParam: 0,
+            getNextPageParam: (
+              lastPage,
+              allPages,
+              lastPageParam,
+              allPageParams,
+            ) => {
+              const nextPage = lastPageParam + 1
+              if (nextPage < data.length) return nextPage
+              return undefined
+            },
+            getPreviousPageParam: (
+              firstPage,
+              allPages,
+              firstPageParam,
+              allPageParams,
+            ) => {
+              return firstPageParam > 0 ? firstPageParam - 1 : undefined
+            },
+          },
+          queryFn: async ({ pageParam }) => {
+            queryFnCallCount++
+            return {
+              data: data[pageParam] ?? 'not-found',
+            }
+          },
+          onQueryStarted: async (_, { queryFulfilled }) => {
+            const queryFnCallCountAtStart = queryFnCallCount
+            await queryFulfilled
+            expect(queryFnCallCount).toBe(queryFnCallCountAtStart + 1)
+          },
+        }),
+      }),
+    })
+
+    return finiteDataApi
+  }
+
   let storeRef = setupApiStore(
     pokemonApi,
     { ...actionsReducer },
@@ -1810,5 +1857,46 @@ describe('Infinite queries', () => {
         ])
       })
     })
+  })
+
+  test("infinite query doesn't invoke queryFn when at end of list with fetchNextPage", async () => {
+    const finiteDataApi = createFiniteDataApi()
+
+    const storeRef = setupApiStore(
+      finiteDataApi,
+      { ...actionsReducer },
+      {
+        withoutTestLifecycles: true,
+      },
+    )
+
+    const getHasNextPage = () => {
+      const selector = finiteDataApi.endpoints.list.select(undefined)
+      const entry = selector(storeRef.store.getState())
+      return entry.hasNextPage
+    }
+
+    // initial load of the query
+    await storeRef.store.dispatch(
+      finiteDataApi.endpoints.list.initiate(undefined, {}),
+    )
+
+    let hasNextPage = getHasNextPage()
+
+    while (hasNextPage) {
+      const nextPageRes = await storeRef.store.dispatch(
+        finiteDataApi.endpoints.list.initiate(undefined, {
+          direction: 'forward',
+        }),
+      )
+      hasNextPage = getHasNextPage()
+    }
+
+    // The next call mimicks fetchNextPage. The `getNextPageParam` will return undefined, and the queryFn will not run, but the `onQueryStarted` still occurs.
+    const THIS_WILL_THROW = await storeRef.store.dispatch(
+      finiteDataApi.endpoints.list.initiate(undefined, {
+        direction: 'forward',
+      }),
+    )
   })
 })
